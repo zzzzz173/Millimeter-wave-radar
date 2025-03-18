@@ -2,7 +2,7 @@
 毫米波雷达
 
 ## 数据采集
-
+参数来源：<https://github.com/DI-HGR/cross_domain_gesture_dataset>
 ## 信号处理
 
 ## 特征提取
