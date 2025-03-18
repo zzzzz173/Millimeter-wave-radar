@@ -153,3 +153,27 @@ ax.set_ylabel('Elevation (degree)')
 ax.set_zlabel('Azimuth (degree)')
 plt.colorbar(sc, label='Velocity (m/s)')
 plt.show()
+
+# ========================== 构建RDAI热力图 ==========================
+# 提取目标点
+range_idx, doppler_idx = np.where(target_mask)
+azimuths = angle_map[range_idx, doppler_idx, 0]
+elevations = angle_map[range_idx, doppler_idx, 1]
+intensities = intensity_map[range_idx, doppler_idx]
+
+range_frequency = range_idx * sample_rate / num_samples
+doppler_frequency = (doppler_idx - num_chirps // 2) * sample_rate / num_chirps
+
+ranges = c * range_frequency / (2 * S)
+velocities = doppler_frequency * lambda_ / 2
+
+# 创建RDAI热力图
+fig = plt.figure(figsize=(12, 8))
+ax = fig.add_subplot(111, projection='3d')
+sc = ax.scatter(ranges, azimuths, elevations, c=intensities, cmap='viridis')
+ax.set_xlabel('Range (m)')
+ax.set_ylabel('Azimuth (degree)')
+ax.set_zlabel('Elevation (degree)')
+plt.colorbar(sc, label='Intensity')
+plt.title('RDAI Heatmap')
+plt.show()
