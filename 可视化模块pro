@@ -1,0 +1,329 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib import cm
+
+# 保留原始的可视化函数
+def plot_results(ranges, elevations, azimuths, velocities, intensities):
+    """
+    改进的可视化函数 - 移除强度阈值过滤
+    """
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # 设置合理的显示范围
+    ax.set_xlim([0, 100])  # 距离范围0-100米
+    ax.set_ylim([-90, 90])  # 仰角范围-90到90度
+    ax.set_zlim([-90, 90])  # 方位角范围-90到90度
+
+    # 绘制所有检测到的点
+    sc = ax.scatter(ranges,
+                    elevations,
+                    azimuths,
+                    c=velocities,
+                    s=100,  # 增大点的大小
+                    cmap='viridis',
+                    alpha=0.6)  # 添加透明度
+
+    ax.set_xlabel('Range (m)')
+    ax.set_ylabel('Elevation (degree)')
+    ax.set_zlabel('Azimuth (degree)')
+    plt.colorbar(sc, label='Velocity (m/s)')
+
+    # 添加目标真实位置的标记
+    ax.scatter([distance], [elevation], [azimuth],
+               color='red', s=200, marker='*',
+               label='True Target')
+    ax.legend()
+
+    plt.title(f'Detected Points (Total: {len(ranges)})')
+    plt.tight_layout()
+    plt.savefig('3d_radar_detection.png', dpi=300)
+    plt.show()
+
+def plot_rdai_heatmap(ranges, azimuths, elevations, intensities):
+    """
+    改进的RDAI热力图函数
+    """
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # 设置合理的显示范围
+    ax.set_xlim([0, 100])
+    ax.set_ylim([-90, 90])
+    ax.set_zlim([-90, 90])
+
+    # 绘制所有点
+    sc = ax.scatter(ranges,
+                    azimuths,
+                    elevations,
+                    c=intensities,
+                    s=100,  # 增大点的大小
+                    cmap='viridis',
+                    alpha=0.6)
+
+    # 添加目标真实位置的标记
+    ax.scatter([distance], [azimuth], [elevation],
+               color='red', s=200, marker='*',
+               label='True Target')
+    ax.legend()
+
+    ax.set_xlabel('Range (m)')
+    ax.set_ylabel('Azimuth (degree)')
+    ax.set_zlabel('Elevation (degree)')
+    plt.colorbar(sc, label='Intensity')
+    plt.title('RDAI Heatmap')
+    plt.tight_layout()
+    plt.savefig('rdai_heatmap.png', dpi=300)
+    plt.show()
+
+# 新增的可视化函数
+
+def plot_range_doppler_map(doppler_fft, target_mask):
+    """
+    绘制距离-多普勒图，突出显示CFAR检测到的目标
+    """
+    power = np.abs(doppler_fft[:, :, 0, 0]) ** 2  # 取第一个发射天线和第一个接收天线的功率
+    
+    # 对功率进行对数转换以增强可视化效果
+    power_db = 10 * np.log10(power + 1e-10)
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # 绘制热力图
+    im = ax.imshow(power_db, aspect='auto', cmap='jet', 
+                   extent=[0, num_chirps, 0, num_samples],
+                   origin='lower')
+    
+    # 标记检测到的目标
+    target_y, target_x = np.where(target_mask)
+    ax.scatter(target_x, target_y, c='red', s=20, marker='x', label='CFAR Detections')
+    
+    # 坐标轴标签
+    ax.set_ylabel('Range Bin')
+    ax.set_xlabel('Doppler Bin')
+    
+    # 将bin转换为实际距离和速度
+    range_ticks = np.linspace(0, num_samples-1, 5, dtype=int)
+    range_labels = [f"{c * (i * sample_rate / num_samples) / (2 * S):.1f}" for i in range_ticks]
+    ax.set_yticks(range_ticks)
+    ax.set_yticklabels(range_labels)
+    
+    doppler_ticks = np.linspace(0, num_chirps-1, 5, dtype=int)
+    doppler_labels = [f"{(i - num_chirps//2) * (lambda_ * sample_rate / num_chirps / 2):.1f}" for i in doppler_ticks]
+    ax.set_xticks(doppler_ticks)
+    ax.set_xticklabels(doppler_labels)
+    
+    ax.set_title('Range-Doppler Map with CFAR Detections')
+    plt.colorbar(im, label='Power (dB)')
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig('range_doppler_map.png', dpi=300)
+    plt.show()
+
+def plot_music_spectrum(range_idx, doppler_idx):
+    """
+    为选定的距离-多普勒单元绘制MUSIC角度谱
+    """
+    if not target_mask[range_idx, doppler_idx]:
+        print(f"位置 ({range_idx}, {doppler_idx}) 未检测到目标")
+        return
+    
+    # 提取当前单元的MIMO虚拟阵列信号
+    snapshots = doppler_fft[range_idx, doppler_idx, :, :].reshape(num_tx * num_rx, -1)
+    
+    # 计算MUSIC谱
+    spectrum = music_algorithm(snapshots, theta_scan, phi_scan, d, lambda_, num_tx, num_rx, K=1)
+    
+    # 创建方位角和仰角网格
+    theta_grid, phi_grid = np.meshgrid(theta_scan, phi_scan)
+    
+    # 绘制2D热力图
+    plt.figure(figsize=(12, 5))
+    
+    plt.subplot(121)
+    plt.pcolormesh(theta_grid, phi_grid, spectrum.T, cmap='jet', shading='auto')
+    plt.colorbar(label='Normalized Power')
+    plt.xlabel('Azimuth (degrees)')
+    plt.ylabel('Elevation (degrees)')
+    plt.title('MUSIC Spectrum (2D)')
+    plt.grid(True)
+    
+    # 添加真实目标位置标记
+    plt.plot(azimuth, elevation, 'r*', markersize=10, label='True Target')
+    plt.legend()
+    
+    # 绘制3D表面图
+    ax = plt.subplot(122, projection='3d')
+    surf = ax.plot_surface(theta_grid, phi_grid, spectrum.T, cmap='jet',
+                           linewidth=0, antialiased=True, alpha=0.8)
+    plt.colorbar(surf, ax=ax, shrink=0.5, aspect=5, label='Normalized Power')
+    ax.set_xlabel('Azimuth (degrees)')
+    ax.set_ylabel('Elevation (degrees)')
+    ax.set_zlabel('Power')
+    ax.set_title('MUSIC Spectrum (3D)')
+    
+    # 添加真实目标位置标记
+    ax.scatter([azimuth], [elevation], [np.max(spectrum)], 
+               c='red', s=100, marker='*', label='True Target')
+    ax.legend()
+    
+    plt.tight_layout()
+    plt.savefig('music_spectrum.png', dpi=300)
+    plt.show()
+
+def plot_range_profile():
+    """
+    绘制距离剖面
+    """
+    # 计算距离剖面（对多普勒维度平均）
+    range_profile = np.mean(np.abs(range_fft[:, :, 0, 0]) ** 2, axis=1)
+    
+    # 将bin转换为实际距离
+    ranges = np.arange(num_samples) * c / (2 * S) * (sample_rate / num_samples)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(ranges, 10 * np.log10(range_profile + 1e-10), 'b-', linewidth=2)
+    plt.axvline(x=distance, color='r', linestyle='--', label=f'True Target ({distance}m)')
+    
+    plt.xlabel('Range (m)')
+    plt.ylabel('Power (dB)')
+    plt.title('Range Profile')
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('range_profile.png', dpi=300)
+    plt.show()
+
+def plot_doppler_profile():
+    """
+    绘制多普勒剖面
+    """
+    # 找到距离目标最近的距离bin
+    target_range_bin = int(2 * distance * S / c * num_samples / sample_rate)
+    
+    # 计算该距离bin的多普勒谱
+    doppler_profile = np.abs(doppler_fft[target_range_bin, :, 0, 0]) ** 2
+    
+    # 将bin转换为实际速度
+    velocities = (np.arange(num_chirps) - num_chirps//2) * lambda_ / 2 * (sample_rate / num_chirps)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(velocities, 10 * np.log10(doppler_profile + 1e-10), 'b-', linewidth=2)
+    plt.axvline(x=velocity, color='r', linestyle='--', label=f'True Target ({velocity}m/s)')
+    
+    plt.xlabel('Velocity (m/s)')
+    plt.ylabel('Power (dB)')
+    plt.title(f'Doppler Profile at Range Bin {target_range_bin} (≈{distance}m)')
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('doppler_profile.png', dpi=300)
+    plt.show()
+
+def plot_polar_detection(ranges, azimuths, intensities):
+    """
+    绘制极坐标下的目标检测结果（俯视图）
+    """
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111, projection='polar')
+    
+    # 将方位角转换为弧度
+    azimuths_rad = np.deg2rad(azimuths)
+    
+    # 绘制散点图
+    sc = ax.scatter(azimuths_rad, ranges, c=intensities, 
+                    s=100, cmap='viridis', alpha=0.6)
+    
+    # 添加真实目标位置
+    ax.scatter(np.deg2rad(azimuth), distance, 
+               c='red', s=200, marker='*', label='True Target')
+    
+    # 设置网格和标签
+    ax.set_theta_zero_location('N')  # 0度为正北方向
+    ax.set_theta_direction(-1)  # 顺时针方向
+    ax.set_rmax(100)
+    ax.set_rticks([20, 40, 60, 80, 100])
+    ax.set_rlabel_position(0)
+    ax.grid(True)
+    
+    plt.colorbar(sc, label='Intensity', pad=0.1)
+    ax.set_title('Radar Detection - Polar View (Top-Down)', va='bottom')
+    ax.legend(loc='upper right')
+    
+    plt.tight_layout()
+    plt.savefig('polar_detection.png', dpi=300)
+    plt.show()
+
+def plot_detection_confidence():
+    """
+    绘制检测置信度分布图
+    """
+    # 计算每个检测点与真实目标的欧几里得距离
+    true_pos = np.array([distance, elevation, azimuth])
+    
+    detected_pos = np.column_stack((ranges, elevations, azimuths))
+    distances = np.sqrt(np.sum((detected_pos - true_pos) ** 2, axis=1))
+    
+    # 归一化距离作为置信度的逆指标（距离越小，置信度越高）
+    max_dist = np.max(distances) if len(distances) > 0 else 1
+    confidence = 1 - distances / max_dist
+    
+    plt.figure(figsize=(10, 6))
+    
+    # 绘制散点图，x轴为点的索引，y轴为置信度
+    plt.scatter(np.arange(len(confidence)), confidence, 
+                c=confidence, cmap='RdYlGn', s=80, alpha=0.7)
+    
+    plt.xlabel('Detection Point Index')
+    plt.ylabel('Detection Confidence')
+    plt.title('Detection Confidence Distribution')
+    plt.colorbar(label='Confidence Level')
+    plt.grid(True)
+    plt.ylim(0, 1.05)
+    
+    plt.tight_layout()
+    plt.savefig('detection_confidence.png', dpi=300)
+    plt.show()
+
+def plot_all_visualizations():
+    """
+    运行所有可视化函数
+    """
+    # 在调用可视化函数之前，添加速度值的限制
+    velocity_limit = 50  # 限制速度范围为±50m/s
+    valid_velocity_mask = (np.abs(velocities) <= velocity_limit)
+    filtered_ranges = ranges[valid_velocity_mask]
+    filtered_elevations = elevations[valid_velocity_mask]
+    filtered_azimuths = azimuths[valid_velocity_mask]
+    filtered_velocities = velocities[valid_velocity_mask]
+    filtered_intensities = intensities[valid_velocity_mask]
+    
+    # 原有可视化
+    plot_results(filtered_ranges, filtered_elevations, filtered_azimuths, 
+                 filtered_velocities, filtered_intensities)
+    plot_rdai_heatmap(filtered_ranges, filtered_azimuths, filtered_elevations, 
+                      filtered_intensities)
+    
+    # 新增可视化
+    plot_range_doppler_map(doppler_fft, target_mask)
+    
+    # 找到信号强度最大的点进行MUSIC谱分析
+    if np.any(target_mask):
+        max_power_idx = np.unravel_index(np.argmax(power * target_mask), power.shape)
+        plot_music_spectrum(max_power_idx[0], max_power_idx[1])
+    
+    plot_range_profile()
+    plot_doppler_profile()
+    plot_polar_detection(filtered_ranges, filtered_azimuths, filtered_intensities)
+    plot_detection_confidence()
+    
+    print("所有可视化已完成并保存!")
+
+# 运行所有可视化
+if __name__ == "__main__":
+    # 检测到的目标点数量应大于0
+    if len(ranges) > 0:
+        plot_all_visualizations()
+    else:
+        print("未检测到任何目标点，无法进行可视化")
