@@ -3,6 +3,7 @@
 
 ## 数据采集
 参数来源：<https://github.com/DI-HGR/cross_domain_gesture_dataset>
+我们自定义生成了4种速度的物体的数据，两种为较慢速度，两种为中等速度
 ## 信号处理
 
 ## 特征提取
