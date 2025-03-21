@@ -13,12 +13,13 @@ num_tx = 2  # 发射天线数
 num_rx = 4  # 接收天线数
 num_chirps = 128  # 每帧啁啾数
 num_samples = 128  # 每啁啾采样点数
-S = 99.987e9  # 频率斜率
+S = 99.987e12  # 频率斜率
 theta_scan = np.linspace(-90, 90, 181)  # 方位角搜索范围
 phi_scan = np.linspace(-90, 90, 181)  # 仰角搜索范围
 sample_rate = 4e6  # 采样率
-chirp_time = 1 / (sample_rate / num_samples)  # 啁啾周期
-frame_time = chirp_time * num_chirps  # 帧周期
+T_chirp = 40e-6
+T_idle = 380e-6
+chirp_time = T_chirp + T_idle  # 啁啾周期
 
 
 # ========================== 生成模拟数据 ==========================
@@ -28,7 +29,7 @@ def generate_moving_target_data(num_tx, num_rx, num_chirps, num_samples, fc, c, 
     targets: 包含多个目标参数的列表，每个目标包含 [velocity, distance, azimuth, elevation]
     """
     lambda_ = c / fc
-    t = np.arange(num_samples) / sample_rate  # 时间轴
+    t = np.arange(num_samples) * T_chirp / num_samples  # 时间轴
     sample_data = np.zeros((num_tx, num_rx, num_chirps, num_samples), dtype=complex)
 
     for velocity, distance, azimuth, elevation in targets:
@@ -38,13 +39,14 @@ def generate_moving_target_data(num_tx, num_rx, num_chirps, num_samples, fc, c, 
         for tx in range(num_tx):
             for rx in range(num_rx):
                 for chirp in range(num_chirps):
-                    phase_shift = 2 * np.pi * f_doppler * chirp * chirp_time
+                    phase_shift = 2 * np.pi * f_doppler * chirp * T_chirp
                     azimuth_shift = 2 * np.pi * d * np.sin(np.deg2rad(azimuth)) * tx / lambda_
                     elevation_shift = 2 * np.pi * d * np.sin(np.deg2rad(elevation)) * rx / lambda_
                     sample_data[tx, rx, chirp, :] += np.exp(
                         1j * (2 * np.pi * f_range * t + phase_shift + azimuth_shift + elevation_shift))
 
     return sample_data
+
 
 
 # ========================== CFAR目标检测 ==========================
@@ -85,8 +87,6 @@ def cfar_2d(matrix, guard_win=5, train_win=10, false_alarm=1e-6):
                 mask[r, d] = True
 
     return mask
-
-
 # ========================== MUSIC角度估计 ==========================
 def music_algorithm(snapshots, theta_scan, phi_scan, d, lambda_, num_tx, num_rx, K=1):
     """
@@ -115,10 +115,10 @@ def music_algorithm(snapshots, theta_scan, phi_scan, d, lambda_, num_tx, num_rx,
 def main():
     # 示例数据：模拟4个不同位置和速度的运动目标
     targets = [
-        [5, 45, 20, -20],  # 目标1：较慢速度
-        [-3, 46, -15, -22],  # 目标2：较慢速度
-        [8, 47, 30, -18],  # 目标3：中等速度
-        [-6, 48, -25, -16]  # 目标4：中等速度
+        [3, 0.8, 20, -20],  # 目标1：较慢速度
+        [-3, 1, -15, -22],  # 目标2：较慢速度
+        [2, 1.2, 30, -18],  # 目标3：中等速度
+        [-2, 1.3, -25, -16]  # 目标4：中等速度
     ]
 
     # 生成数据
@@ -148,7 +148,7 @@ def main():
 
     # 计算转换因子
     range_scale = c / (2 * S * num_samples / sample_rate)
-    velocity_scale = lambda_ / (2 * frame_time)
+    velocity_scale = lambda_ / (2 * T_chirp * num_chirps)
 
     # 角度估计
     angle_map = np.zeros((num_samples, num_chirps, 2))
@@ -173,7 +173,7 @@ def main():
     intensities = intensity_map[range_bins, doppler_bins]
 
     # 过滤有效目标
-    valid_range_mask = (ranges >= 40) & (ranges <= 55)
+    valid_range_mask = (ranges >= 0) & (ranges <= 5)
     valid_velocity_mask = (velocities >= -10) & (velocities <= 10)
     valid_mask = valid_range_mask & valid_velocity_mask
 
