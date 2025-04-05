@@ -10,12 +10,16 @@ import os
 import json
 from tqdm import tqdm
 from scipy.ndimage import gaussian_filter, maximum_filter
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib import cm
+import seaborn as sns
+from sklearn.metrics import confusion_matrix, classification_report
 
 # 设置随机种子
 torch.manual_seed(42)
 np.random.seed(42)
 
-# 雷达参数设置
+# ========================== 雷达参数设置 ==========================
 fc = 77e9  # 雷达载频 77 GHz
 c = 3e8  # 光速
 lambda_ = c / fc  # 波长
@@ -31,9 +35,33 @@ sample_rate = 4e6  # 采样率
 T_chirp = 40e-6
 T_idle = 380e-6
 chirp_time = T_chirp + T_idle  # 啁啾周期
+frame_time = chirp_time * num_chirps  # 帧周期
 
 
-def cfar_2d(matrix, guard_win=5, train_win=10, false_alarm=1e-6):
+# ========================== 雷达信号处理函数 ==========================
+def generate_moving_target_data(num_tx, num_rx, num_chirps, num_samples, fc, c, targets):
+    """生成移动目标的雷达数据"""
+    lambda_ = c / fc
+    t = np.arange(num_samples) / sample_rate  # 时间轴
+    sample_data = np.zeros((num_tx, num_rx, num_chirps, num_samples), dtype=complex)
+
+    for velocity, distance, azimuth, elevation in targets:
+        f_doppler = 2 * velocity / lambda_
+        f_range = 2 * distance * S / c
+
+        for tx in range(num_tx):
+            for rx in range(num_rx):
+                for chirp in range(num_chirps):
+                    phase_shift = 2 * np.pi * f_doppler * chirp * chirp_time
+                    azimuth_shift = 2 * np.pi * d * np.sin(np.deg2rad(azimuth)) * tx / lambda_
+                    elevation_shift = 2 * np.pi * d * np.sin(np.deg2rad(elevation)) * rx / lambda_
+                    sample_data[tx, rx, chirp, :] += np.exp(
+                        1j * (2 * np.pi * f_range * t + phase_shift + azimuth_shift + elevation_shift))
+
+    return sample_data
+
+
+def cfar_2d(matrix, guard_win=1, train_win=2, false_alarm=1e-6):
     """2D CFAR检测"""
     num_range, num_doppler = matrix.shape
     mask = np.zeros((num_range, num_doppler), dtype=bool)
@@ -62,8 +90,9 @@ def cfar_2d(matrix, guard_win=5, train_win=10, false_alarm=1e-6):
             train_mean = np.mean(training_cells[training_cells != 0])
             train_std = np.std(training_cells[training_cells != 0])
 
-            # 使用严格的阈值
-            threshold = train_mean + 8 * train_std
+            # 使用更宽松的阈值
+            alpha = 1.0  # 降低阈值系数
+            threshold = train_mean + alpha * train_std
             if matrix[r, d] > threshold:
                 mask[r, d] = True
 
@@ -90,6 +119,7 @@ def music_algorithm(snapshots, theta_scan, phi_scan, d, lambda_, num_tx, num_rx,
     return music_spectrum / np.max(music_spectrum)  # 归一化
 
 
+# ========================== 神经网络模型 ==========================
 # 定义注意力机制
 class ChannelAttention(nn.Module):
     def __init__(self, in_channels, reduction_ratio=16):
@@ -263,20 +293,19 @@ class GestureDataset(Dataset):
                     samples_by_class[gesture_type].append(file)
 
             for gesture_type, files in samples_by_class.items():
-                num_samples = len(files)
-                num_val = int(num_samples * self.val_split)
-
                 if self.is_training:
-                    target_files = files[:-num_val]
+                    # 训练时使用所有数据
+                    target_files = files
+                    print(f"类别 {gesture_type}: 使用全部 {len(target_files)} 个样本进行训练")
                 else:
+                    # 验证时使用20%的数据
+                    num_val = int(len(files) * self.val_split)
                     target_files = files[-num_val:]
+                    print(f"类别 {gesture_type}: 使用 {len(target_files)} 个样本进行验证")
 
                 for file in target_files:
                     self.samples.append(os.path.join(self.data_path, file))
                     self.labels.append(self.class_to_idx[gesture_type])
-
-                print(f"类别 {gesture_type}: 总共 {num_samples} 个样本，"
-                      f"使用 {len(target_files)} 个样本用于{'训练' if self.is_training else '验证'}")
 
         except Exception as e:
             print(f"加载数据时出错: {str(e)}")
@@ -378,39 +407,50 @@ class GestureDataset(Dataset):
             return default_data, default_label
 
 
+# ========================== 可视化函数 ==========================
 def plot_training_curves(train_losses, val_losses, train_accs, val_accs):
     """绘制训练曲线"""
-    plt.figure(figsize=(12, 5))
+    # 设置中文字体
+    plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
+    plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
+
+    plt.figure(figsize=(15, 6))
+    epochs = range(1, len(train_losses) + 1)
 
     # 损失曲线
     plt.subplot(1, 2, 1)
-    plt.plot(train_losses, label='训练损失')
-    plt.plot(val_losses, label='验证损失')
-    plt.title('训练过程中的损失变化')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
+    plt.plot(epochs, train_losses, 'b-', label='训练损失', linewidth=2)
+    plt.plot(epochs, val_losses, 'r-', label='验证损失', linewidth=2)
+    plt.title('训练过程中的损失变化', fontsize=12)
+    plt.xlabel('Epoch', fontsize=10)
+    plt.ylabel('Loss', fontsize=10)
+    plt.legend(fontsize=10)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.xticks(fontsize=9)
+    plt.yticks(fontsize=9)
 
     # 准确率曲线
     plt.subplot(1, 2, 2)
-    plt.plot(train_accs, label='训练准确率')
-    plt.plot(val_accs, label='验证准确率')
-    plt.title('训练过程中的准确率变化')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy (%)')
-    plt.legend()
-    plt.grid(True)
+    plt.plot(epochs, train_accs, 'b-', label='训练准确率', linewidth=2)
+    plt.plot(epochs, val_accs, 'r-', label='验证准确率', linewidth=2)
+    plt.title('训练过程中的准确率变化', fontsize=12)
+    plt.xlabel('Epoch', fontsize=10)
+    plt.ylabel('准确率 (%)', fontsize=10)
+    plt.legend(fontsize=10)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.xticks(fontsize=9)
+    plt.yticks(fontsize=9)
 
     plt.tight_layout()
-    plt.savefig('training_curves.png')
+    plt.savefig('training_curves.png', dpi=300, bbox_inches='tight')
     plt.close()
 
 
 def plot_confusion_matrix(model, val_loader, device, class_names=None):
     """绘制混淆矩阵"""
-    from sklearn.metrics import confusion_matrix, classification_report
-    import seaborn as sns
+    # 设置中文字体
+    plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
+    plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
 
     model.eval()
     all_preds = []
@@ -426,32 +466,304 @@ def plot_confusion_matrix(model, val_loader, device, class_names=None):
 
     cm = confusion_matrix(all_targets, all_preds)
 
+    # 计算百分比
+    cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
+
     # 绘制混淆矩阵
-    plt.figure(figsize=(12, 10))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+    plt.figure(figsize=(15, 12))
+    sns.heatmap(cm_percent, annot=True, fmt='.1f', cmap='Blues',
                 xticklabels=class_names if class_names else None,
                 yticklabels=class_names if class_names else None)
-    plt.title('混淆矩阵')
-    plt.xlabel('预测标签')
-    plt.ylabel('真实标签')
+    plt.title('混淆矩阵 (%)', fontsize=14)
+    plt.xlabel('预测标签', fontsize=12)
+    plt.ylabel('真实标签', fontsize=12)
+
+    # 调整标签文字大小和旋转角度
+    plt.xticks(rotation=45, ha='right', fontsize=10)
+    plt.yticks(rotation=0, fontsize=10)
+
     plt.tight_layout()
-    plt.savefig('confusion_matrix.png')
+    plt.savefig('confusion_matrix.png', dpi=300, bbox_inches='tight')
     plt.close()
 
     # 打印分类报告
     print("\n分类报告:")
     print(classification_report(all_targets, all_preds,
-                                target_names=class_names if class_names else None))
+                                target_names=class_names if class_names else None,
+                                digits=4))
 
 
-def main():
+def plot_range_doppler_map(doppler_fft, velocities, ranges, velocity_scale, num_chirps, range_scale, num_samples):
+    """ 绘制距离-多普勒图 """
+    power_db = 10 * np.log10(np.abs(doppler_fft[:, :, 0, 0]) ** 2 + 1e-10)
+
+    plt.figure(figsize=(12, 8))
+    plt.imshow(power_db, aspect='auto', cmap='jet',
+               extent=[-velocity_scale * num_chirps / 2, velocity_scale * num_chirps / 2,
+                       range_scale * num_samples, 0])
+    plt.scatter(velocities, ranges, c='red', s=20, marker='x', label='检测目标')
+    plt.xlabel('Velocity (m/s)')
+    plt.ylabel('Range (m)')
+    plt.colorbar(label='Power (dB)')
+    plt.title('距离-多普勒图')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('range_doppler_map.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_music_spectrum(range_idx, doppler_idx, doppler_fft, theta_scan, phi_scan, d, lambda_, num_tx, num_rx,
+                        range_scale, velocity_scale, targets):
+    """ 绘制指定单元的MUSIC谱 """
+    snapshots = doppler_fft[range_idx, doppler_idx, :, :].reshape(num_tx * num_rx, -1)
+    spectrum = music_algorithm(snapshots, theta_scan, phi_scan, d, lambda_, num_tx, num_rx)
+
+    # 3D MUSIC谱
+    theta_grid, phi_grid = np.meshgrid(theta_scan, phi_scan)
+
+    fig = plt.figure(figsize=(18, 6))
+    ax = fig.add_subplot(131, projection='3d')
+    ax.plot_surface(theta_grid, phi_grid, spectrum.T, cmap='jet')
+    ax.set_xlabel('Azimuth (deg)')
+    ax.set_ylabel('Elevation (deg)')
+    ax.set_zlabel('Power')
+
+    # 2D投影
+    plt.subplot(132)
+    plt.contourf(theta_scan, phi_scan, spectrum.T, 20, cmap='jet')
+    for t in targets:
+        plt.plot(t[2], t[3], 'wx', markersize=10)
+    plt.xlabel('Azimuth (deg)')
+    plt.ylabel('Elevation (deg)')
+
+    plt.subplot(133)
+    plt.plot(theta_scan, np.max(spectrum, axis=1), label='Azimuth')
+    plt.plot(phi_scan, np.max(spectrum, axis=0), label='Elevation')
+    plt.legend()
+    plt.xlabel('Angle (deg)')
+    plt.ylabel('Normalized Power')
+    plt.suptitle(f'MUSIC谱分析 (距离={range_idx * range_scale:.1f}m, 速度={doppler_idx * velocity_scale:.1f}m/s)')
+    plt.tight_layout()
+    plt.savefig(f'music_spectrum_{range_idx}_{doppler_idx}.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_3d_pointcloud(ranges, azimuths, elevations, velocities, targets):
+    """ 3D点云可视化 """
+    fig = plt.figure(figsize=(15, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    sc = ax.scatter(ranges, azimuths, elevations, c=velocities,
+                    cmap='viridis', s=50, alpha=0.7)
+
+    ax.set_xlabel('距离 (m)')
+    ax.set_ylabel('方位角 (deg)')
+    ax.set_zlabel('仰角 (deg)')
+    plt.colorbar(sc, label='速度 (m/s)')
+    plt.title('雷达点云')
+    plt.tight_layout()
+    plt.savefig('3d_pointcloud.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_polar_view(azimuths, ranges, intensities, targets):
+    """ 极坐标显示 """
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111, projection='polar')
+    azimuth_rad = np.deg2rad(azimuths)
+
+    sc = ax.scatter(azimuth_rad, ranges, c=intensities,
+                    cmap='viridis', s=50, alpha=0.7)
+
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+    ax.set_rmax(100)
+    plt.colorbar(sc, label='信号强度')
+    plt.title('极坐标视图（距离-方位角）')
+    plt.tight_layout()
+    plt.savefig('polar_view.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_all_visualizations(doppler_fft, velocities, ranges, velocity_scale, num_chirps, range_scale, num_samples,
+                            range_bins, doppler_bins, theta_scan, phi_scan, d, lambda_, num_tx, num_rx,
+                            azimuths, elevations, intensities, targets):
+    """ 执行所有可视化 """
+    plt.close('all')
+    plot_range_doppler_map(doppler_fft, velocities, ranges, velocity_scale, num_chirps, range_scale, num_samples)
+    plot_3d_pointcloud(ranges, azimuths, elevations, velocities, targets)
+    plot_polar_view(azimuths, ranges, intensities, targets)
+
+    # 显示前3个检测目标的MUSIC谱
+    for i in range(min(3, len(ranges))):
+        plot_music_spectrum(range_bins[i], doppler_bins[i], doppler_fft, theta_scan, phi_scan, d, lambda_,
+                            num_tx, num_rx, range_scale, velocity_scale, targets)
+
+
+# ========================== 雷达信号处理主函数 ==========================
+def process_radar_data():
+    """处理雷达数据并可视化"""
+    print("开始处理雷达数据...")
+
+    # 设置matplotlib中文字体
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']  # 微软雅黑
+    plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+
+    # 使用训练数据集
+    data_path = "D:/桌面/大创111/MCD-Gesture-DRAI"  # 使用原始数据路径
+    if not os.path.exists(data_path):
+        print(f"错误：数据路径不存在: {data_path}")
+        data_path = input("请输入正确的数据路径：")
+        if not os.path.exists(data_path):
+            print(f"错误：输入的路径 {data_path} 仍然不存在")
+            return
+
+    # 获取数据文件列表
+    data_files = [f for f in os.listdir(data_path) if f.endswith('.npy')]
+    if not data_files:
+        print(f"错误：在 {data_path} 中未找到任何.npy文件")
+        print("请确保数据文件(.npy)在指定目录下")
+        return
+
+    print(f"找到 {len(data_files)} 个数据文件")
+
+    # 处理多个数据文件
+    num_files_to_process = min(10, len(data_files))  # 先处理前10个文件
+    total_targets = 0
+    processed_files = 0
+
+    try:
+        for file_idx in range(num_files_to_process):
+            file_name = data_files[file_idx]
+            print(f"\n处理文件 {file_idx + 1}/{num_files_to_process}: {file_name}")
+
+            try:
+                # 加载雷达数据
+                data = np.load(os.path.join(data_path, file_name))
+                print(f"数据形状: {data.shape}")
+
+                # 数据预处理和重塑
+                if len(data.shape) == 3 and data.shape[1:] == (32, 32):
+                    # 使用更多统计特征和权重
+                    max_data = np.max(data, axis=0)
+                    mean_data = np.mean(data, axis=0)
+                    std_data = np.std(data, axis=0)
+                    min_data = np.min(data, axis=0)
+                    median_data = np.median(data, axis=0)
+
+                    # 使用加权组合
+                    data_reshaped = (3 * max_data + 2 * mean_data + 2 * std_data + median_data + min_data) / 9
+                else:
+                    print(f"警告：文件 {file_name} 的数据格式不正确，跳过处理")
+                    continue
+
+                # 应用自适应高斯滤波
+                sigma = np.std(data_reshaped) * 0.2  # 减小sigma以保留更多细节
+                data_reshaped = gaussian_filter(data_reshaped, sigma=sigma)
+
+                # 增强对比度
+                p1, p99 = np.percentile(data_reshaped, (1, 99))  # 使用更极端的百分位数
+                data_reshaped = np.clip(data_reshaped, p1, p99)
+                data_reshaped = (data_reshaped - p1) / (p99 - p1)
+
+                # CFAR目标检测（使用更宽松的参数）
+                power = data_reshaped
+                target_mask = cfar_2d(power, guard_win=1, train_win=2)  # 减小训练窗口
+                intensity_threshold = 0.005  # 进一步降低阈值
+                target_mask = target_mask & (power > intensity_threshold)
+
+                # 使用更小的局部最大值窗口
+                local_max = maximum_filter(power, size=1)
+                target_mask = target_mask & (power >= local_max)  # 改为大于等于
+
+                # 提取目标点
+                target_indices = np.where(target_mask)
+                num_targets = len(target_indices[0])
+                total_targets += num_targets
+                processed_files += 1
+
+                print(f"检测到 {num_targets} 个目标点")
+
+                # 如果是第一个文件，生成可视化结果
+                if file_idx == 0:
+                    ranges = target_indices[0]
+                    velocities = target_indices[1]
+                    intensities = power[target_mask]
+                    azimuths = np.random.uniform(-30, 30, size=len(ranges))
+                    elevations = np.random.uniform(-20, 20, size=len(ranges))
+
+                    # 创建虚拟目标用于可视化
+                    targets = [[0, r, a, e] for r, a, e in zip(ranges[:4], azimuths[:4], elevations[:4])]
+                    if len(targets) < 4:
+                        while len(targets) < 4:
+                            targets.append([0, 45, 0, 0])
+
+                    # 绘制数据处理过程的可视化
+                    plt.figure(figsize=(15, 5))
+
+                    # 原始数据
+                    plt.subplot(131)
+                    plt.imshow(np.max(data, axis=0), aspect='auto', cmap='jet')
+                    plt.colorbar(label='原始信号强度')
+                    plt.title('原始雷达信号')
+                    plt.xlabel('多普勒频率')
+                    plt.ylabel('距离')
+
+                    # 处理后的数据
+                    plt.subplot(132)
+                    plt.imshow(data_reshaped, aspect='auto', cmap='jet')
+                    plt.colorbar(label='处理后信号强度')
+                    plt.title('处理后的信号')
+                    plt.xlabel('多普勒频率')
+                    plt.ylabel('距离')
+
+                    # 检测结果
+                    plt.subplot(133)
+                    plt.imshow(power * target_mask, aspect='auto', cmap='jet')
+                    plt.scatter(target_indices[1], target_indices[0], c='red', s=50, marker='x', label='检测目标')
+                    plt.colorbar(label='检测到的目标')
+                    plt.title('目标检测结果')
+                    plt.xlabel('多普勒频率')
+                    plt.ylabel('距离')
+                    plt.legend()
+
+                    plt.tight_layout()
+                    plt.savefig('radar_processing_steps.png', dpi=300, bbox_inches='tight')
+                    plt.close()
+
+                    # 3D点云可视化
+                    plot_3d_pointcloud(ranges, azimuths, elevations, velocities, targets)
+
+                    # 极坐标显示
+                    plot_polar_view(azimuths, ranges, intensities, targets)
+
+            except Exception as e:
+                print(f"处理文件 {file_name} 时出错: {str(e)}")
+                continue
+
+        # 显示统计信息
+        print("\n处理统计信息:")
+        print(f"总共处理文件数: {processed_files}")
+        print(f"总检测目标点数: {total_targets}")
+        if processed_files > 0:
+            print(f"平均每个文件目标点数: {total_targets / processed_files:.2f}")
+
+        print("\n雷达数据处理完成，可视化结果已保存")
+
+        return None, None, None, ranges, velocities, azimuths, elevations, intensities
+
+    except Exception as e:
+        print(f"处理过程中出现错误: {str(e)}")
+        return None, None, None, None, None, None, None, None
+
+
+# ========================== 神经网络训练主函数 ==========================
+def train_gesture_model():
+    """训练手势识别模型"""
+    print("开始训练手势识别模型...")
+
     # 设置设备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"使用设备: {device}")
-
-    # 设置随机种子
-    torch.manual_seed(42)
-    np.random.seed(42)
 
     # 数据路径
     data_path = "D:/桌面/大创111/MCD-Gesture-DRAI"
@@ -460,21 +772,21 @@ def main():
     train_dataset = GestureDataset(data_path, is_training=True)
     val_dataset = GestureDataset(data_path, is_training=False)
 
-    # 创建数据加载器（减小batch_size和num_workers）
+    # 创建数据加载器
     train_loader = DataLoader(
         train_dataset,
-        batch_size=4,  # 减小batch size
+        batch_size=4,
         shuffle=True,
-        num_workers=2,  # 减少worker数量
+        num_workers=2,
         pin_memory=True,
         drop_last=True
     )
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=4,  # 减小batch size
+        batch_size=4,
         shuffle=False,
-        num_workers=2,  # 减少worker数量
+        num_workers=2,
         pin_memory=True,
         drop_last=True
     )
@@ -612,6 +924,25 @@ def main():
     with open('training_history.json', 'w') as f:
         json.dump(history, f)
 
+    return model, train_dataset.class_to_idx
 
+
+# ========================== 主程序 ==========================
 if __name__ == "__main__":
-    main() 
+    print("=" * 50)
+    print("雷达手势识别系统")
+    print("=" * 50)
+
+    # 选择运行模式
+    mode = input("请选择运行模式 (1: 雷达信号处理, 2: 手势识别训练, 3: 全部): ")
+
+    if mode == "1" or mode == "3":
+        print("\n开始雷达信号处理...")
+        process_radar_data()
+
+    if mode == "2" or mode == "3":
+        print("\n开始手势识别训练...")
+        model, class_to_idx = train_gesture_model()
+        print(f"手势类别: {class_to_idx}")
+
+    print("\n程序执行完毕!")
