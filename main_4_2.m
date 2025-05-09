@@ -25,7 +25,7 @@ readframe=25;
 %0.047m 的距离分辨率和 0.039m/s 的速度分辨率
 
 %% 读取Bin文件
-Filename ="E:\gesture\push4\data__9.bin";
+Filename ="E:\gesture\big1\data__2.bin";
 fid = fopen(Filename, 'r');
 adcDataRow = fread(fid, 'int16');
 fclose(fid);

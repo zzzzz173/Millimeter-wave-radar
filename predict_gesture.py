@@ -273,7 +273,7 @@ def predict_gesture(data_path, model_path="best_model.pth", class_mapping_path="
 
 if __name__ == "__main__":
     # 设置文件路径
-    data_path = r"D:\桌面\大创111\MCD-Gesture-DRAI\y_Pull_e4_u1_p4_s3.npy"
+    data_path = r"D:\桌面\大创111\MCD-Gesture-DRAI\y_SlideLeft_e4_u6_p4_s3.npy"
     model_path = "best_model.pth"
     class_mapping_path = "class_mapping.json"
 
