@@ -89,6 +89,7 @@ output = model(input_tensor)
 
 ### 使用IWR6843
 
+参考论文：<https://www.mdpi.com/1424-8220/24/1/268>
 以下是功能对比：
 
 #### AWR1843 与 IWR6843 跌倒识别功能对比表
@@ -112,6 +113,7 @@ output = model(input_tensor)
 
 ### 使用三块IWR1843
 
+参考论文：<https://www.mdpi.com/1424-8220/24/11/3660>
 可使用三块IWR1843实现，以下为安装场景：
 ![安装场景](image/IWR1843*3.png)
 
