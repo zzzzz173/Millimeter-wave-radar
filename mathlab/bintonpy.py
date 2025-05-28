@@ -140,6 +140,10 @@ if motion_frames:
     for i in range(t):
         current_frame = motion_data[i, :, :]
         reshaped_data[i, :, :] = current_frame
+        plt.subplot(int(t/5)+1, 5, i+1)  # 第 i 个子图
+        plt.imshow(current_frame, aspect='auto', cmap='viridis')  # 绘制热力图
+        plt.colorbar()  # 添加颜色条
+        plt.gca().invert_yaxis()
 
     output_dir = r'F:\gesture_datas\big1'
     if not os.path.exists(output_dir):
